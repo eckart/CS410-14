@@ -48,7 +48,7 @@ HValIf = Two /+/ Nat
 for things which can go wrong. -}
 
 data Error (E X : Set) : Set where
-  ok : X -> Error E X
+  ok    : X -> Error E X
   error : E -> Error E X
 
 {- 2.1 Add a constructor to the following datatype for each different
@@ -58,6 +58,8 @@ data Error (E X : Set) : Set where
 -}
 
 data EvalError : Set where
+  BooleanExpectedInIf : EvalError
+  CannotAddBoolean    : EvalError
   -- your constructors here
 
 {- 2.2 Write a little piece of "glue code" to make it easier to manage
@@ -71,7 +73,8 @@ _>>=_ : {E S T : Set}
         -> Error E S          -- process which tries to get an S
         -> (S -> Error E T)   -- given an S, process which tries for a T
         -> Error E T          -- combined in sequence
-es >>= s2et = {!!}
+ok x    >>= s2et = s2et x
+error x >>= s2et = error x
 
 {- 2.3 Implement an evaluator for HExpIf. Be sure to add only numbers and
    to branch only on Booleans. Report type mismatches as errors. You should
@@ -79,7 +82,24 @@ es >>= s2et = {!!}
 -}
 
 eval : HExpIf -> Error EvalError HValIf
-eval e = {!!}
+eval (num x)    = ok (inr x)
+eval (boo x)    = ok (inl x)
+eval (e +++ e1) = eval e >>= (\ {(inr x) -> (eval e1 >>= (\ {(inr y) -> ok (inr (x + y))
+                                                            ;(inl y) -> error CannotAddBoolean}))
+                                ;(inl x) -> error CannotAddBoolean })                            
+{--
+-- a bit more verbose than the bind version but may communicate better
+eval (e +++ e1) with eval e | eval e1
+... | error err  | _          = error err
+... | _          | error err  = error err
+... | ok (inr x) | ok (inr y) = ok (inr (x + y))
+... | ok (inl x) | _          = error CannotAddBoolean
+... | _          | ok (inl x) = error CannotAddBoolean
+--}
+eval (hif num x then t_case else f_case)    = error BooleanExpectedInIf 
+eval (hif boo x then t_case else f_case)    = if x then eval t_case else eval f_case
+eval (hif hexpr then t_case else f_case)    = eval hexpr >>= (λ {(inl x) -> if x then eval t_case else eval f_case
+                                                                ;(inr x) -> error BooleanExpectedInIf})
 
 {- Note that the type of eval is not specific about whether the value
    expected is numeric or Boolean. It may help to introduce auxiliary
@@ -90,10 +110,10 @@ eval e = {!!}
 {- Next up, stack machine code, and its execution. -}
 
 data HBCode : Set where
-  PUSHN : Nat -> HBCode
-  PUSHB : Two -> HBCode
-  ADD : HBCode
-  _SEQ_ : HBCode -> HBCode -> HBCode
+  PUSHN   : Nat -> HBCode
+  PUSHB   : Two -> HBCode
+  ADD     : HBCode
+  _SEQ_   : HBCode -> HBCode -> HBCode
   _IFPOP_ : HBCode -> HBCode -> HBCode
 
 {- The intended behaviour of (t IFPOP f) is as follows
@@ -108,10 +128,22 @@ data HBCode : Set where
 -}
 
 data ExecError : Set where
+  StackUnderflow : ExecError
+  TypeErrorAdd  : ExecError
+  TypeErrorIf   : ExecError
   -- your constructors here
 
 exec : HBCode -> List HValIf -> Error ExecError (List HValIf)
-exec c s = {!!}
+exec (PUSHN x)                s   = ok (inr x :> s)
+exec (PUSHB x)                s   = ok (inl x :> s)
+exec ADD                      []  = error StackUnderflow
+exec ADD               (x  :> []) = error StackUnderflow
+exec ADD (inr x1 :> inr x2 :> s ) = ok (inr (x1 + x2) :> s)
+exec ADD ( _     :> _      :> s ) = error TypeErrorAdd
+exec (c1 SEQ c2)              s   = (exec c1 s) >>= (\ s -> exec c2 s) -- first execute c1 then c2
+exec (c1 IFPOP c2)            []  = error StackUnderflow
+exec (c1 IFPOP c2)  (inl x :> s)  = if x then (exec c1 s) else (exec c2 s)
+exec (c1 IFPOP c2)  (inr x :> s)  = error TypeErrorIf
 
 {- Next, we take a look at code generation and type safety. -}
 
@@ -132,16 +164,38 @@ BOOL =HTy= BOOL  = tt
 -}
 
 data CompileError : Set where
+  ArithmaticError : HExpIf -> CompileError
+  NatIsNotBool    : HExpIf -> CompileError
+  InConsistentCases : HExpIf -> HExpIf -> CompileError
   -- your constructors here
 
 compile : HExpIf -> Error CompileError (HTy /*/ HBCode)
-compile (num x) = {!!}
-compile (boo x) = {!!}
+compile (num x) = ok (NUM , PUSHN x)
+compile (boo x) = ok (BOOL , PUSHB x)
 compile (e1 +++ e2) = compile e1 >>= \
-  {  (BOOL , c1)  -> error {!!}
-  ;  (NUM , c1)   -> {!!}
+  {  (BOOL , c1)  -> error (ArithmaticError e1)
+  ;  (NUM , c1)   -> (compile e2 >>= (\
+                             { (BOOL , c2) -> error (ArithmaticError e2)
+                             ; (NUM , c2) -> ok (NUM , (c1 SEQ c2) SEQ ADD)
+                             }))
   }
-compile (hif e then e₁ else e₂) = {!!}
+compile (hif num x then e₁ else e₂)    = error (NatIsNotBool (num x))
+compile (hif boo x then e₁ else e₂)    = if x then (compile e₁) else (compile e₂)
+compile (hif test then t_case else f_case) = compile test >>= \
+  { (BOOL , c) -> (compile t_case >>= (\
+                  { (BOOL , bc1)  -> compile f_case >>= \
+                                     { (BOOL , bc2) -> ok (BOOL , (c SEQ (bc1 IFPOP bc2)))
+                                      ; (NUM , nc2) -> error (InConsistentCases t_case f_case) 
+                                     }
+                  ; (NUM , nc1)   -> compile f_case >>= \
+                                     { (BOOL , bc2) -> error (InConsistentCases t_case f_case) 
+                                      ; (NUM , nc2) -> ok (NUM , (c SEQ (nc1 IFPOP nc2)))
+                                     }
+                  }))
+  ; (NUM , c)  -> error (NatIsNotBool test)
+  }
+-- TODO: use =HTy=
+
 
 
 {- You have a little bit more room for creative problem-solving in what's
@@ -160,33 +214,92 @@ HVal BOOL = Two
    well HTy-typed expressions can be constructed. -}
 
 data THExpIf : HTy -> Set where
-  val : {t : HTy} -> HVal t -> THExpIf t
+  val  : {t : HTy} -> HVal t -> THExpIf t
+  add  : THExpIf NUM -> THExpIf NUM -> THExpIf NUM
+  cond : {t : HTy} -> THExpIf BOOL -> THExpIf t -> THExpIf t -> THExpIf t
   -- you fill in addition and if-then-else
 
 {- 2.7 Implement a type-safe evaluator. -}
 
 teval : {t : HTy} -> THExpIf t -> HVal t
-teval e = {!!}
+teval (val x)        = x
+teval (add x x₁)     = (teval x) + (teval x₁)
+teval (cond x x₁ x₂) = if (teval x) then (teval x₁) else (teval x₂)
 
 {- 2.8 Implement a type checker. -}
 
 data TypeError : Set where
+  NotANat  : HExpIf -> TypeError
+  NotABool : HExpIf -> TypeError
   -- your constructors here
 
 tcheck : (t : HTy) -> HExpIf -> Error TypeError (THExpIf t)
-tcheck t e = {!!}
+tcheck NUM (num x)     = ok (val x)
+tcheck NUM (boo x)     = error (NotANat (boo x))
+tcheck NUM (e +++ e₁)  = (tcheck NUM e) >>= \ t -> (tcheck NUM e₁) >>= \ t2 -> ok (add t t2)
+tcheck BOOL (e +++ e₁) = error (NotABool (e +++ e₁))
+tcheck BOOL (num x)    = error (NotABool (num x))
+tcheck BOOL (boo x)    = ok (val x)
+tcheck t (hif e then e₁ else e₂) =
+  (tcheck BOOL e) >>= \ b ->
+  (tcheck t e₁) >>=  \ v1 ->
+  (tcheck t e₂) >>= \ v2 -> ok (cond b v1 v2)
+
+
 
 {- 2.9 Adapt the technique from Hutton.agda to give a type-safe underflow-free
    version of HBCode. You will need to think what is a good type to represent
    the "shape" of a stack: before, we just used Nat to represent the *height* of
-   the stack, but now we must worry about types. See next question for a hint. -}
+   the stack, but now we must worry about types. See next question for a hint. 
 
-data THBCode : {- your indices here -} Set where
-  -- your constructors here
+
+All : {X : Set}            -- element type
+      -> (X -> Set)        -- property of elements
+      -> List X -> Set     -- property of whole lists
+All P []         = One
+All P (x :> xs)  = P x /*/ All P xs
+
+{- If X = One, then List X is like a copy of Nat, and All is a bit like Vec -}
+
+-}
+data TVal : Set where
+  tnum  : Nat -> TVal
+  tbool : Two -> TVal 
+
+data THBCode : HTy -> Set where
+  TPUSHN   : Nat -> THBCode NUM
+  TPUSHB   : Two -> THBCode BOOL
+  TADD     : THBCode NUM
+  _TSEQ_   : {t1 t2 : HTy} -> THBCode t1 -> THBCode t2 -> THBCode t2
+  _TIFPOP_ : {t : HTy} -> THBCode t -> THBCode t -> THBCode t
 
 {- 2.10 Implement the execution semantics for your code. You will need to think
    about how to represent a stack. The Ex2Prelude.agda file contains a very
-   handy piece of kit for this purpose. You write the type, too. -}
+   handy piece of kit for this purpose. You write the type, too. 
+
+Stk : List One -> Set
+Stk xs = All (\ _ -> Nat) xs
+
+
+exec : {i j : List One} -> HCode i j -> Stk i -> Stk j
+exec (PUSH x) s = x , s
+exec ADD (x , (y , s)) = (y + x) , s
+exec (h -SEQ- k) s = exec k (exec h s)
+
+-}
+
+
+
+--TStack : List One -> Set
+--TStack xs = All (\ x -> TVal ) xs
+
+--texec : {t : HTy} {n m : List One}-> THBCode t -> TStack n -> TStack m
+texec : {t : HTy} {n m : List One}-> THBCode t -> TStack n -> TStack m
+texec (TPUSHN x) s    = {!(tnum x) , s!}
+texec (TPUSHB x) s    = {!!}
+texec TADD s          = {!!}
+texec (c TSEQ c₁) s   = {!!}
+texec (c TIFPOP c₁) s = {!!}
 
 -- your code here
 
