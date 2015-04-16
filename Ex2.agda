@@ -236,7 +236,9 @@ data TypeError : Set where
 tcheck : (t : HTy) -> HExpIf -> Error TypeError (THExpIf t)
 tcheck NUM (num x)     = ok (val x)
 tcheck NUM (boo x)     = error (NotANat (boo x))
-tcheck NUM (e +++ e₁)  = (tcheck NUM e) >>= \ t -> (tcheck NUM e₁) >>= \ t2 -> ok (add t t2)
+tcheck NUM (e +++ e₁)  =
+  (tcheck NUM e) >>= \ t ->
+  (tcheck NUM e₁) >>= \ t2 -> ok (add t t2)
 tcheck BOOL (e +++ e₁) = error (NotABool (e +++ e₁))
 tcheck BOOL (num x)    = error (NotABool (num x))
 tcheck BOOL (boo x)    = ok (val x)
@@ -253,57 +255,46 @@ tcheck t (hif e then e₁ else e₂) =
    the stack, but now we must worry about types. See next question for a hint. 
 
 
-All : {X : Set}            -- element type
-      -> (X -> Set)        -- property of elements
-      -> List X -> Set     -- property of whole lists
-All P []         = One
-All P (x :> xs)  = P x /*/ All P xs
-
-{- If X = One, then List X is like a copy of Nat, and All is a bit like Vec -}
-
 -}
-data TVal : Set where
-  tnum  : Nat -> TVal
-  tbool : Two -> TVal 
 
-data THBCode : HTy -> Set where
-  TPUSHN   : Nat -> THBCode NUM
-  TPUSHB   : Two -> THBCode BOOL
-  TADD     : THBCode NUM
-  _TSEQ_   : {t1 t2 : HTy} -> THBCode t1 -> THBCode t2 -> THBCode t2
-  _TIFPOP_ : {t : HTy} -> THBCode t -> THBCode t -> THBCode t
+-- embedded the effect of the operation on the stack in the type
+--
+--                    before      after
+data THBCode : HTy -> List HTy -> List HTy -> Set where
+  TPUSHN   : {i : List HTy} -> Nat -> THBCode NUM i (NUM :> i)            -- one more element (of type NUM) 
+  TPUSHB   : {i : List HTy} -> Two -> THBCode BOOL i (BOOL :> i)          -- one more element (of type BOOL)
+  TADD     : {i : List HTy} -> THBCode NUM (NUM :> (NUM :> i)) (NUM :> i) -- takes two NUMs and puts back a new NUM
+  _TSEQ_   : {i j k : List HTy} {t1 t2 : HTy} -> THBCode t1 i j -> THBCode t2 j k -> THBCode t2 i k  -- line up the stack heights
+  _TIFPOP_ : {i j : List HTy} {t : HTy} ->
+    THBCode t i (t :> j) ->        -- stack height spec for the tt case -> ends with one more element of type "t" on the stack
+    THBCode t i (t :> j) ->        -- stack height spec for the ff case -> ends with one more element of type "t" on the stack
+    THBCode t (BOOL :> i) (t :> j) -- takes a BOOL off the stack an puts a new "t" value back 
+                                
 
 {- 2.10 Implement the execution semantics for your code. You will need to think
    about how to represent a stack. The Ex2Prelude.agda file contains a very
    handy piece of kit for this purpose. You write the type, too. 
-
-Stk : List One -> Set
-Stk xs = All (\ _ -> Nat) xs
-
-
-exec : {i j : List One} -> HCode i j -> Stk i -> Stk j
-exec (PUSH x) s = x , s
-exec ADD (x , (y , s)) = (y + x) , s
-exec (h -SEQ- k) s = exec k (exec h s)
-
 -}
 
+-- HVal is a function returning the Type for the given HTy Code
+-- the clou is, that HVal returns a "Set" rather than e specific common type
+TStack : List HTy → Set
+TStack i = All HVal i
 
-
---TStack : List One -> Set
---TStack xs = All (\ x -> TVal ) xs
-
---texec : {t : HTy} {n m : List One}-> THBCode t -> TStack n -> TStack m
-texec : {t : HTy} {n m : List One}-> THBCode t -> TStack n -> TStack m
-texec (TPUSHN x) s    = {!(tnum x) , s!}
-texec (TPUSHB x) s    = {!!}
-texec TADD s          = {!!}
-texec (c TSEQ c₁) s   = {!!}
-texec (c TIFPOP c₁) s = {!!}
+texec : {t : HTy} {n m : List HTy} -> THBCode t n m -> TStack n -> TStack m
+texec (TPUSHN x) s                = x , s
+texec (TPUSHB x) s                = x , s
+texec TADD (x1 , x2 , s)          = (x1 + x2) , s
+texec (c1 TSEQ c2) s              = texec c2 (texec c1 s)
+texec (ct TIFPOP cf) (tt , s)     = texec ct s
+texec (ct TIFPOP cf) (ff , s)     = texec cf s
 
 -- your code here
 
 {- 2.11 Write the compiler from well typed expressions to safe code. -}
 
-tcompile : {t : HTy} -> THExpIf t -> {!!}
-tcompile e = {!!}
+tcompile : {t : HTy} -> THExpIf t -> {n : List HTy} -> THBCode t n (t :> n)
+tcompile {NUM}  (val x)            = TPUSHN x
+tcompile {BOOL} (val x)            = TPUSHB x 
+tcompile (add e1 e2)               = ((tcompile e1) TSEQ (tcompile e2)) TSEQ TADD
+tcompile (cond test t_case f_case) = (tcompile test) TSEQ (tcompile t_case TIFPOP tcompile f_case)
