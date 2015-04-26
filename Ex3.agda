@@ -18,21 +18,27 @@ NAT = Data kNat
 -- the corresponding kit-encoded numbers.
 
 Nat2NAT : Nat -> NAT
-Nat2NAT n = {!!}
+Nat2NAT zero    = [ inl <> ]            -- One
+Nat2NAT (suc n) = [ inr (Nat2NAT n) ]   -- Build a nested sum 
 
 -- Use fold to define the function which sends them back.
+f : One /+/ Nat -> Nat
+f (inl x) = zero
+f (inr x) = suc x
 
 NAT2Nat : NAT -> Nat
-NAT2Nat = fold (kK One k+ kId) {!!}
+NAT2Nat = fold (kK One k+ kId) f
 
 -- Show that you get the "round trip" property (by writing
 -- recursive functions that use rewrite.
 
 Nat2NAT2Nat : NAT2Nat o Nat2NAT =^= id
-Nat2NAT2Nat n = {!!}
+Nat2NAT2Nat zero    = refl
+Nat2NAT2Nat (suc n) rewrite Nat2NAT2Nat n = refl     -- by induction hypothesis
 
 NAT2Nat2NAT : Nat2NAT o NAT2Nat =^= id
-NAT2Nat2NAT n = {!!}
+NAT2Nat2NAT [ inl <> ]                      = refl
+NAT2Nat2NAT [ inr x ] rewrite NAT2Nat2NAT x = refl   -- by induction hypothesis
 
 
 {- 3.2 Lists in the Kit -}
@@ -42,7 +48,8 @@ NAT2Nat2NAT n = {!!}
 -- recursive *sublists* not for list elements
 
 kLIST : Set -> Kit
-kLIST A = {!!}
+kLIST A = kK One     k+  (kK A k* kId)
+--           'nil'       'cons' 
 
 LIST : Set -> Set
 LIST A = Data (kLIST A)
@@ -50,15 +57,18 @@ LIST A = Data (kLIST A)
 -- define nil and cons for your lists
 
 nil : {A : Set} -> LIST A
-nil = {!!}
+nil {A} = [ inl <> ]
 
 cons : {A : Set} -> A -> LIST A -> LIST A
-cons a as = {!!}
+cons a as  = [ (inr (a , as)) ]
 
 -- use fold to define concatenation
+f' : {A : Set } -> Data (kLIST A) -> One /+/ A /*/ Data (kLIST A) -> Data (kLIST A)
+f' ys (inl x)         = ys
+f' ys (inr (a , as)) = cons a as
 
 conc : {A : Set} -> LIST A -> LIST A -> LIST A
-conc {A} xs ys = fold (kLIST A) {!!} xs
+conc {A} xs ys = fold (kLIST A) (f' ys) xs
 
 -- prove the following (the yellow bits should disappear when
 -- you define kLIST);
@@ -69,12 +79,17 @@ cong : {S T : Set}(f : S -> T){a b : S} -> a == b -> f a == f b
 cong f refl = refl
 
 concNil : {A : Set}(as : LIST A) -> conc as nil == as
-concNil as = {!!}
+concNil [ inl <> ]       = refl
+concNil [ inr (a , as) ] = cong (cons a) (concNil as)
+--                                       when the rest of the list is equal
+--                              then also:
+--                              the list with
+--                              and additional element is equal
 
 concAssoc : {A : Set}(as bs cs : LIST A) ->
             conc (conc as bs) cs == conc as (conc bs cs)
-concAssoc as bs cs = {!!}
-
+concAssoc [ inl <> ]       bs cs = refl   -- because of the definition if the List type and fold 'conc nil as = as' holds definitionally
+concAssoc [ inr (a , as) ] bs cs = cong (cons a) (concAssoc as bs cs)
 
 {- 3.3 Trees in the Kit -}
 
